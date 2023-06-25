@@ -7,6 +7,8 @@
 ---  * `local x = require'x'('x')('y')...`
 ---* not supported forms
 ---  * `local x, y = require'x', require'y'`
+---  * `local x = require'x' ---x`
+---  * `     local x = require'x'     `
 ---* sort in alphabet order, based on the 'tier' of each require statement
 ---
 ---require tiers:
@@ -20,6 +22,7 @@ local fn = require("infra.fn")
 local jelly = require("infra.jellyfish")("squirrel.imports.sort", vim.log.levels.INFO)
 local prefer = require("infra.prefer")
 local strlib = require("infra.strlib")
+local unsafe = require("infra.unsafe")
 
 local api = vim.api
 local ts = vim.treesitter
@@ -86,8 +89,13 @@ local function find_require_mod_name(bufnr, root)
   local name
   do
     name = ts.get_node_text(arg0, bufnr)
-    assert(strlib.startswith(name, '"') and strlib.endswith(name, '"'))
-    name = string.sub(name, 2, -2)
+    if strlib.startswith(name, '"') or strlib.startswith(name, "'") then
+      name = string.sub(name, 2, -2)
+    elseif strlib.startswith(name, "[[") then
+      name = string.sub(name, 3, -3)
+    else
+      error("unknown chars surrounds the string")
+    end
   end
 
   return name
@@ -158,7 +166,6 @@ return function(bufnr)
         local require_name = find_require_mod_name(bufnr, node)
         if require_name then
           section_started = true
-          -- todo: ensure there is no other node at the same line
           table.insert(requires, { name = require_name, node = node })
         else
           if section_started then break end
@@ -173,15 +180,37 @@ return function(bufnr)
       stop_line = stop_line + 1
     end
 
+    do ---ensure each require is the only node in its range
+      ---there is no easy to do it, current impl have such limitations:
+      ---* no leading/trailing space/tab before require statements
+      local lineslen = unsafe.lineslen(bufnr, fn.range(start_line, stop_line))
+      for _, el in ipairs(requires) do
+        local start_line, start_col, stop_row, stop_col = el.node:range()
+        if start_col ~= 0 then
+          jelly.err("require in line=%d has leadings", start_line)
+          error("multiple nodes in same line")
+        end
+        if stop_col ~= lineslen[stop_row] then
+          jelly.err("require in line=%d has trailings", stop_row)
+          error("multiple nodes in same line")
+        end
+      end
+    end
+
     tiers = sorted_tiers(requires)
   end
 
   local sorted_lines = {}
-  for _, requires in ipairs(tiers) do
-    for _, el in ipairs(requires) do
-      table.insert(sorted_lines, ts.get_node_text(el.node, bufnr))
+  do
+    for requires in fn.filter(function(requires) return #requires > 0 end, tiers) do
+      for _, el in ipairs(requires) do
+        table.insert(sorted_lines, ts.get_node_text(el.node, bufnr))
+      end
+      table.insert(sorted_lines, "")
     end
-    if #requires > 0 then table.insert(sorted_lines, "") end
+    assert(#sorted_lines > 1)
+    ---the last line should not be blank
+    table.remove(sorted_lines)
   end
 
   api.nvim_buf_set_lines(bufnr, start_line, stop_line, false, sorted_lines)

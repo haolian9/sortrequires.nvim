@@ -10,6 +10,8 @@ an opinionated nvim plugin to sort require statements in alphabet order
   * `local x = require'x'('x')('y')...`
 * not supported forms
   * `local x, y = require'x', require'y'`
+  * `local x = require'x' ---x`
+  * `     local x = require'x'     `
 * sort in alphabet order, based on the 'tier' of each require statement
 * require tiers:
   * builtin: ffi, math
@@ -18,7 +20,7 @@ an opinionated nvim plugin to sort require statements in alphabet order
   * others: ...
 
 ## status
-* it just works
+* it may change the AST, use it with caution
 * it is feature-freezed
 
 ## prerequisites
