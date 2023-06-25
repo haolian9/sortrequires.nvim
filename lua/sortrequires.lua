@@ -21,6 +21,7 @@
 local fn = require("infra.fn")
 local jelly = require("infra.jellyfish")("squirrel.imports.sort", vim.log.levels.INFO)
 local prefer = require("infra.prefer")
+local Regulator = require("infra.Regulator")
 local strlib = require("infra.strlib")
 local unsafe = require("infra.unsafe")
 
@@ -41,8 +42,8 @@ local function get_named_decendant(root, ...)
   for i in arg_iter do
     local itype = arg_iter()
     next = next:named_child(i)
-    if next == nil then return jelly.debug("n=%d type.expect=%s .actual=%s sexpr=%s", i, itype, "nil", "nil") end
-    if next:type() ~= itype then return jelly.debug("n=%d type.expect=%s .actual=%s sexpr=%s", i, itype, next:type(), next:sexpr()) end
+    if next == nil then return jelly.debug("n=%d type.expect=%s .actual=%s", i, itype, "nil") end
+    if next:type() ~= itype then return jelly.debug("n=%d type.expect=%s .actual=%s", i, itype, next:type()) end
   end
   return next
 end
@@ -143,9 +144,13 @@ do
   end
 end
 
+local regulator = Regulator(1024)
+
 return function(bufnr)
   if bufnr == nil or bufnr == 0 then bufnr = api.nvim_get_current_buf() end
   if prefer.bo(bufnr, "filetype") ~= "lua" then return jelly.err("only support lua buffer") end
+
+  if regulator:throttled(bufnr) then return jelly.debug("no change") end
 
   local root
   do
@@ -213,5 +218,16 @@ return function(bufnr)
     table.remove(sorted_lines)
   end
 
+  do
+    local old_lines = api.nvim_buf_get_lines(bufnr, start_line, stop_line, false)
+    assert(#sorted_lines == #old_lines)
+    local no_changes = fn.iter_equals(sorted_lines, old_lines)
+    if no_changes then
+      regulator:update(bufnr)
+      return jelly.debug("no changes in the require section")
+    end
+  end
+
   api.nvim_buf_set_lines(bufnr, start_line, stop_line, false, sorted_lines)
+  regulator:update(bufnr)
 end
