@@ -2,14 +2,14 @@
 ---* only for lua
 ---* only top level `local x = require'x'`
 ---* no gap lines between require statements, otherwise the later will be ignored
----* sort in alphabet order
 ---* supported forms
 ---  * `local x = require'x'`
 ---  * `local x = require'x'('x')('y')...`
 ---* not supported forms
 ---  * `local x, y = require'x', require'y'`
+---* sort in alphabet order, based on the 'tier' of each require statement
 ---
----todo: require tiers
+---require tiers:
 ---  * builtin: ffi, math
 ---  * vim's: require'vim.lsp.protocol'
 ---  * hal's: infra ...
@@ -17,11 +17,14 @@
 ---
 
 local fn = require("infra.fn")
-local jelly = require("infra.jellyfish")("squirrel.imports.sort", vim.log.levels.DEBUG)
+local jelly = require("infra.jellyfish")("squirrel.imports.sort", vim.log.levels.INFO)
 local prefer = require("infra.prefer")
+local strlib = require("infra.strlib")
 
 local api = vim.api
 local ts = vim.treesitter
+
+---@alias Require {name: string, node: TSNode}
 
 ---@param root TSNode
 ---@param ... integer|string @child index, child type
@@ -67,7 +70,7 @@ local function find_require_mod_name(bufnr, root)
       if child:type() ~= "function_call" then return end
       fn_call = child
     end
-    if ident == nil then return end
+    if ident == nil then return jelly.err("too many nested function calls on the RHS") end
   end
 
   if ts.get_node_text(ident, bufnr) ~= "require" then return end
@@ -80,7 +83,56 @@ local function find_require_mod_name(bufnr, root)
     assert(arg0 ~= nil and arg0:type() == "string")
   end
 
-  return ts.get_node_text(arg0, bufnr)
+  local name
+  do
+    name = ts.get_node_text(arg0, bufnr)
+    assert(strlib.startswith(name, '"') and strlib.endswith(name, '"'))
+    name = string.sub(name, 2, -2)
+  end
+
+  return name
+end
+
+---@type fun(orig_requires: Require[]): Require[][]
+local sorted_tiers
+do
+  local preset_tiers = {
+    fn.toset({ "ffi" }),
+    fn.toset({ "vim" }),
+    fn.toset({ "infra" }),
+  }
+
+  ---@param a Require
+  ---@param b Require
+  ---@return boolean
+  local function compare_requires(a, b) return string.lower(a.name) < string.lower(b.name) end
+
+  function sorted_tiers(orig_requires)
+    local tiers = {}
+    do
+      for i = 1, #preset_tiers + 1 do
+        tiers[i] = {}
+      end
+      for _, el in ipairs(orig_requires) do
+        local tier_ix
+        local prefix = fn.split_iter(el.name, ".")()
+        for i, presets in ipairs(preset_tiers) do
+          if presets[prefix] then
+            tier_ix = i
+            break
+          end
+        end
+        if tier_ix == nil then tier_ix = #tiers end
+        table.insert(tiers[tier_ix], el)
+      end
+    end
+
+    for _, requires in ipairs(tiers) do
+      table.sort(requires, compare_requires)
+    end
+
+    return tiers
+  end
 end
 
 return function(bufnr)
@@ -95,37 +147,42 @@ return function(bufnr)
     root = trees[1]:root()
   end
 
-  ---@type {name: string, node: TSNode}[]
-  local requires = {}
+  local start_line, stop_line, tiers
   do
-    local section_started = false
-    for i in fn.range(root:named_child_count()) do
-      local node = assert(root:named_child(i), i)
-      local require_name = find_require_mod_name(bufnr, node)
-      if require_name then
-        section_started = true
-        -- todo: ensure there is no other node at the same line
-        table.insert(requires, { name = require_name, node = node })
-      else
-        if section_started then break end
+    ---@type Require[]
+    local requires = {}
+    do
+      local section_started = false
+      for i in fn.range(root:named_child_count()) do
+        local node = assert(root:named_child(i), i)
+        local require_name = find_require_mod_name(bufnr, node)
+        if require_name then
+          section_started = true
+          -- todo: ensure there is no other node at the same line
+          table.insert(requires, { name = require_name, node = node })
+        else
+          if section_started then break end
+        end
       end
     end
-  end
-  if #requires < 2 then return jelly.info("no need to sort requires") end
+    if #requires < 2 then return jelly.info("no need to sort requires") end
 
-  local start_line, stop_line
-  do
-    start_line = requires[1].node:range()
-    _, _, stop_line = requires[#requires].node:range()
-    stop_line = stop_line + 1
-  end
+    do
+      start_line = requires[1].node:range()
+      _, _, stop_line = requires[#requires].node:range()
+      stop_line = stop_line + 1
+    end
 
-  table.sort(requires, function(a, b) return string.lower(a.name) < string.lower(b.name) end)
-
-  local sorted = {}
-  for _, el in ipairs(requires) do
-    table.insert(sorted, ts.get_node_text(el.node, bufnr))
+    tiers = sorted_tiers(requires)
   end
 
-  api.nvim_buf_set_lines(bufnr, start_line, stop_line, false, sorted)
+  local sorted_lines = {}
+  for _, requires in ipairs(tiers) do
+    for _, el in ipairs(requires) do
+      table.insert(sorted_lines, ts.get_node_text(el.node, bufnr))
+    end
+    if #requires > 0 then table.insert(sorted_lines, "") end
+  end
+
+  api.nvim_buf_set_lines(bufnr, start_line, stop_line, false, sorted_lines)
 end

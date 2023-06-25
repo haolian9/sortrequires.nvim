@@ -5,12 +5,17 @@ an opinionated nvim plugin to sort require statements in alphabet order
 * based on treesitter
 * only top level `local x = require'x'`
 * no gap lines between require statements, otherwise these lines will be ignored
-* sort in alphabet order
 * supported forms
   * `local x = require'x'`
   * `local x = require'x'('x')('y')...`
 * not supported forms
   * `local x, y = require'x', require'y'`
+* sort in alphabet order, based on the 'tier' of each require statement
+* require tiers:
+  * builtin: ffi, math
+  * vim's: vim
+  * hal's: infra
+  * others: ...
 
 ## status
 * it just works
@@ -23,10 +28,3 @@ an opinionated nvim plugin to sort require statements in alphabet order
 
 ## usage
 * `:lua require'sortrequires'()`
-
-## todo
-require tiers
-* builtin: ffi, math
-* vim's: vim.lsp.protocol
-* hal's: infra ...
-* others: ...
