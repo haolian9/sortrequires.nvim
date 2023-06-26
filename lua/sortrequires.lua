@@ -23,7 +23,6 @@ local jelly = require("infra.jellyfish")("squirrel.imports.sort", vim.log.levels
 local prefer = require("infra.prefer")
 local Regulator = require("infra.Regulator")
 local strlib = require("infra.strlib")
-local unsafe = require("infra.unsafe")
 
 local api = vim.api
 local ts = vim.treesitter
@@ -152,6 +151,9 @@ return function(bufnr)
 
   if regulator:throttled(bufnr) then return jelly.debug("no change") end
 
+  ---for latter returns without any changes
+  regulator:update(bufnr)
+
   local root
   do
     local langtree = ts.get_parser()
@@ -186,18 +188,27 @@ return function(bufnr)
     end
 
     do ---ensure each require is the only node in its range
-      ---there is no easy to do it, current impl have such limitations:
-      ---* no leading/trailing space/tab before require statements
-      local lineslen = unsafe.lineslen(bufnr, fn.range(start_line, stop_line))
-      for _, el in ipairs(requires) do
-        local start_line, start_col, stop_row, stop_col = el.node:range()
-        if start_col ~= 0 then
-          jelly.err("require in line=%d has leadings", start_line)
-          error("multiple nodes in same line")
+      for _, r in ipairs(requires) do
+        local i = r.node
+
+        local p = i:prev_sibling()
+        if p ~= nil then
+          local _, _, p_stop_line = p:range()
+          local i_start_line = i:range()
+          if p_stop_line == i_start_line then
+            jelly.err("%d line has a non-require node and a require node", i_start_line + 1)
+            error("multiple nodes in same line")
+          end
         end
-        if stop_col ~= lineslen[stop_row] then
-          jelly.err("require in line=%d has trailings", stop_row)
-          error("multiple nodes in same line")
+
+        local n = i:next_sibling()
+        if n ~= nil then
+          local n_start_line = n:range()
+          local _, _, p_stop_line = i:range()
+          if p_stop_line == n_start_line then
+            jelly.err("%d line has a require node and a non-require node", p_stop_line + 1)
+            error("multiple nodes in same line")
+          end
         end
       end
     end
@@ -220,12 +231,8 @@ return function(bufnr)
 
   do
     local old_lines = api.nvim_buf_get_lines(bufnr, start_line, stop_line, false)
-    assert(#sorted_lines == #old_lines)
     local no_changes = fn.iter_equals(sorted_lines, old_lines)
-    if no_changes then
-      regulator:update(bufnr)
-      return jelly.debug("no changes in the require section")
-    end
+    if no_changes then return jelly.debug("no changes in the require section") end
   end
 
   api.nvim_buf_set_lines(bufnr, start_line, stop_line, false, sorted_lines)
